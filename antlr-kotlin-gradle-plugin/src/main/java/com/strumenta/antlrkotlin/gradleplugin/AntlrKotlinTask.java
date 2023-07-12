@@ -17,31 +17,34 @@
 package com.strumenta.antlrkotlin.gradleplugin;
 
 import com.strumenta.antlrkotlin.gradleplugin.internal.*;
-import org.gradle.api.Action;
-import org.gradle.api.file.FileCollection;
-import org.gradle.api.file.FileTree;
-import org.gradle.api.file.SourceDirectorySet;
+import groovy.lang.Closure;
+import org.gradle.api.DefaultTask;
+import org.gradle.api.file.*;
+import org.gradle.api.specs.Spec;
 import org.gradle.api.tasks.*;
-import org.gradle.api.tasks.incremental.IncrementalTaskInputs;
-import org.gradle.api.tasks.incremental.InputFileDetails;
+import org.gradle.api.tasks.util.PatternFilterable;
+import org.gradle.api.tasks.util.PatternSet;
 import org.gradle.process.internal.worker.WorkerProcessFactory;
-import org.gradle.util.GFileUtils;
+import org.gradle.work.ChangeType;
+import org.gradle.work.InputChanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
 import java.io.File;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Callable;
+import java.util.stream.Stream;
 
 /**
  * Generates parsers from Antlr grammars.
  */
 @CacheableTask
-public class AntlrKotlinTask extends SourceTask {
+public class AntlrKotlinTask extends DefaultTask implements PatternFilterable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AntlrKotlinTask.class);
 
@@ -56,7 +59,26 @@ public class AntlrKotlinTask extends SourceTask {
     private File outputDirectory;
     private String maxHeapSize;
     private String packageName;
-    private SourceDirectorySet sourceDirectorySet;
+
+    private ConfigurableFileCollection allSourceFiles = getProject().getObjects().fileCollection();
+
+    @Internal
+    protected PatternFilterable patternFilterable = new PatternSet();
+
+    @SkipWhenEmpty // Marks the input incremental: https://github.com/gradle/gradle/issues/17593
+    @InputFiles
+    @PathSensitive(PathSensitivity.RELATIVE)
+    @IgnoreEmptyDirectories
+    public FileCollection source = getProject().getObjects().fileCollection()
+            .from((Callable<FileCollection>)() -> allSourceFiles.getAsFileTree().matching(patternFilterable));
+
+    public void setSource(Object... sources) {
+        allSourceFiles.setFrom(sources);
+    }
+
+    public void setSource(Object source) {
+        allSourceFiles.setFrom(source);
+    }
 
     /**
      * Specifies that all rules call {@code traceIn}/{@code traceOut}.
@@ -193,39 +215,33 @@ public class AntlrKotlinTask extends SourceTask {
     }
 
     @TaskAction
-    public void execute(IncrementalTaskInputs inputs) {
+    public void execute(InputChanges inputs) throws IOException {
         final Set<File> grammarFiles = new HashSet<File>();
-        final Set<File> sourceFiles = getSource().getFiles();
         final AtomicBoolean cleanRebuild = new AtomicBoolean();
-        inputs.outOfDate(
-                new Action<InputFileDetails>() {
-                    public void execute(InputFileDetails details) {
-                        File input = details.getFile();
-                        if (sourceFiles.contains(input)) {
-                            grammarFiles.add(input);
-                        } else {
-                            // classpath change?
-                            cleanRebuild.set(true);
-                        }
-                    }
-                }
-        );
-        inputs.removed(new Action<InputFileDetails>() {
-            @Override
-            public void execute(InputFileDetails details) {
-                if (details.isRemoved()) {
-                    cleanRebuild.set(true);
-                }
+        inputs.getFileChanges(source).forEach(change -> {
+            if (change.getFileType() == FileType.DIRECTORY) return;
+
+            if (change.getChangeType() == ChangeType.REMOVED) {
+                cleanRebuild.set(true);
+                return;
             }
+
+            File targetFile = change.getFile();
+            grammarFiles.add(targetFile);
         });
+
         if (cleanRebuild.get()) {
-            GFileUtils.deleteDirectory(outputDirectory);
-            grammarFiles.addAll(sourceFiles);
+            try (Stream<Path> pathStream = Files.walk(outputDirectory.toPath())) {
+                pathStream.sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+            }
+            grammarFiles.addAll(source.getFiles());
         }
 
         AntlrWorkerManager manager = new AntlrWorkerManager();
         LOGGER.debug("AntlrWorkerManager created");
-        AntlrSpec spec = new AntlrSpecFactory().create(this, grammarFiles, sourceDirectorySet);
+        AntlrSpec spec = new AntlrSpecFactory().create(this, grammarFiles, allSourceFiles.getFrom());
         LOGGER.debug("AntlrSpec created");
         AntlrResult result = manager.runWorker(getProject().getProjectDir(), getWorkerProcessBuilderFactory(), getAntlrClasspath(), spec);
         LOGGER.debug("AntlrResult obtained");
@@ -245,48 +261,63 @@ public class AntlrKotlinTask extends SourceTask {
         }
     }
 
-    /**
-     * Sets the source for this task. Delegates to {@link #setSource(Object)}.
-     * <p>
-     * If the source is of type {@link SourceDirectorySet}, then the relative path of each source grammar files
-     * is used to determine the relative output path of the generated source
-     * If the source is not of type {@link SourceDirectorySet}, then the generated source files end up
-     * flattened in the specified output directory.
-     *
-     * @param source The source.
-     * @since 4.0
-     */
     @Override
-    public void setSource(FileTree source) {
-        setSource((Object) source);
+    public Set<String> getIncludes() {
+        return patternFilterable.getIncludes();
     }
 
-    /**
-     * Sets the source for this task. Delegates to {@link SourceTask#setSource(Object)}.
-     * <p>
-     * If the source is of type {@link SourceDirectorySet}, then the relative path of each source grammar files
-     * is used to determine the relative output path of the generated source
-     * If the source is not of type {@link SourceDirectorySet}, then the generated source files end up
-     * flattened in the specified output directory.
-     *
-     * @param source The source.
-     */
     @Override
-    public void setSource(Object source) {
-        super.setSource(source);
-        if (source instanceof SourceDirectorySet) {
-            this.sourceDirectorySet = (SourceDirectorySet) source;
-        }
+    public Set<String> getExcludes() {
+        return patternFilterable.getExcludes();
     }
 
-    /**
-     * Returns the source for this task, after the include and exclude patterns have been applied. Ignores source files which do not exist.
-     *
-     * @return The source.
-     */
     @Override
-    @PathSensitive(PathSensitivity.RELATIVE)
-    public FileTree getSource() {
-        return super.getSource();
+    public PatternFilterable setIncludes(Iterable<String> includes) {
+        return patternFilterable.setIncludes(includes);
+    }
+
+    @Override
+    public PatternFilterable setExcludes(Iterable<String> excludes) {
+        return patternFilterable.setExcludes(excludes);
+    }
+
+    @Override
+    public PatternFilterable include(String... includes) {
+        return patternFilterable.include(includes);
+    }
+
+    @Override
+    public PatternFilterable include(Iterable<String> includes) {
+        return patternFilterable.include(includes);
+    }
+
+    @Override
+    public PatternFilterable include(Spec<FileTreeElement> includeSpec) {
+        return patternFilterable.include(includeSpec);
+    }
+
+    @Override
+    public PatternFilterable include(Closure includeSpec) {
+        return patternFilterable.include(includeSpec);
+    }
+
+    @Override
+    public PatternFilterable exclude(String... excludes) {
+        return patternFilterable.exclude(excludes);
+    }
+
+    @Override
+    public PatternFilterable exclude(Iterable<String> excludes) {
+        return patternFilterable.exclude(excludes);
+    }
+
+    @Override
+    public PatternFilterable exclude(Spec<FileTreeElement> excludeSpec) {
+        return patternFilterable.exclude(excludeSpec);
+    }
+
+    @Override
+    public PatternFilterable exclude(Closure excludeSpec) {
+        return patternFilterable.exclude(excludeSpec);
     }
 }

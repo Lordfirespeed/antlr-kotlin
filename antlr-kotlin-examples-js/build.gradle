@@ -22,7 +22,6 @@ apply plugin: 'com.strumenta.antlrkotlin'
 repositories {
     mavenCentral()
     mavenLocal()
-    jcenter()
 }
 
 dependencies {

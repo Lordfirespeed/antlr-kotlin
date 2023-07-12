@@ -17,17 +17,18 @@
 package com.strumenta.antlrkotlin.gradleplugin.internal;
 
 import com.strumenta.antlrkotlin.gradleplugin.AntlrKotlinTask;
-import org.gradle.api.file.SourceDirectorySet;
+import org.gradle.api.file.FileCollection;
 
 import java.io.File;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class AntlrSpecFactory {
 
     public AntlrSpec create(AntlrKotlinTask antlrTask, Set<File> grammarFiles,
-                            SourceDirectorySet sourceDirectorySet) {
+                            Set<Object> sources) {
         List<String> arguments = new LinkedList<>(antlrTask.getArguments());
         File outputDirectory = antlrTask.getOutputDirectory();
 
@@ -51,7 +52,12 @@ public class AntlrSpecFactory {
             arguments.add("-traceTreeWalker");
         }
 
-        return new AntlrSpec(arguments, grammarFiles, sourceDirectorySet.getSrcDirs(), outputDirectory,
+        Set<File> fileSources = sources.stream()
+                .filter((Object element) -> element instanceof File)
+                .map(element -> (File)element)
+                .collect(Collectors.toSet());
+
+        return new AntlrSpec(arguments, grammarFiles, fileSources, outputDirectory,
                 antlrTask.getMaxHeapSize());
     }
 }

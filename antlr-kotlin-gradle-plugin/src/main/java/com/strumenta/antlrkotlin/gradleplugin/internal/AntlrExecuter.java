@@ -60,7 +60,7 @@ public class AntlrExecuter implements RequestHandler<AntlrSpec, AntlrResult> {
                 Class<?> toolClass = Class.forName(className); // ok to use caller classloader
                 LOGGER.debug("Tool loaded " + className);
                 if (args == null) {
-                    return toolClass.newInstance();
+                    return toolClass.getConstructor().newInstance();
                 } else {
                     Constructor<?> constructor = toolClass.getConstructor(String[].class);
                     return constructor.newInstance(new Object[]{args});
