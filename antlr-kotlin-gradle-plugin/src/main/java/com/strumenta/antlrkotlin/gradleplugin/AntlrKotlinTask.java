@@ -65,12 +65,20 @@ public class AntlrKotlinTask extends DefaultTask implements PatternFilterable {
     @Internal
     protected PatternFilterable patternFilterable = new PatternSet();
 
+    public PatternFilterable getPatternFilterable() {
+        return patternFilterable;
+    }
+
     @SkipWhenEmpty // Marks the input incremental: https://github.com/gradle/gradle/issues/17593
     @InputFiles
     @PathSensitive(PathSensitivity.RELATIVE)
     @IgnoreEmptyDirectories
     public FileCollection source = getProject().getObjects().fileCollection()
             .from((Callable<FileCollection>)() -> allSourceFiles.getAsFileTree().matching(patternFilterable));
+
+    public FileCollection getSource() {
+        return source;
+    }
 
     public void setSource(Object... sources) {
         allSourceFiles.setFrom(sources);
@@ -261,11 +269,13 @@ public class AntlrKotlinTask extends DefaultTask implements PatternFilterable {
         }
     }
 
+    @Internal
     @Override
     public Set<String> getIncludes() {
         return patternFilterable.getIncludes();
     }
 
+    @Internal
     @Override
     public Set<String> getExcludes() {
         return patternFilterable.getExcludes();
